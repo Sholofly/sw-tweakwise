@@ -1,4 +1,6 @@
-<?php declare(strict_types=1);
+<?php
+
+declare(strict_types=1);
 
 namespace RH\Tweakwise\Service;
 
@@ -140,7 +142,6 @@ class FeedService
                 $this->feedRepository->update([
                     $data,
                 ], $context);
-
             }
         }
     }
@@ -287,7 +288,7 @@ class FeedService
 
             $criteria = new Criteria();
             $criteria->setOffset(0);
-            $criteria->setLimit(1);
+            $criteria->setLimit(100);
             $criteria->addAssociation('customFields');
 
             if (!$feed->isExcludeOptions()) {
@@ -303,6 +304,7 @@ class FeedService
             $criteria->addAssociation('streams');
             $criteria->addAssociation('streams.categories');
             $criteria->addAssociation('media');
+            $criteria->addAssociation('children');
 
             if (!$feed->isExcludeReviews()) {
                 $criteria->addAssociation('productReviews');
@@ -328,12 +330,12 @@ class FeedService
             );
 
             /** @var ProductListingResult $result */
-            while (($result = $this->loadProducts($criteria, $salesChannelContext)) !== null) {
-                $this->eventDispatcher->dispatch(
-                    new TweakwiseProductFeedResultEvent($result, $salesChannelContext)
-                );
+            while (($result = $this->loadProducts($criteria, $salesChannelContext))->count() > 0) {
+                // $this->eventDispatcher->dispatch(
+                //     new TweakwiseProductFeedResultEvent($result, $salesChannelContext)
+                // );
 
-                $this->renderProducts($result->getElements(), $salesChannelDomain, $feed, $salesChannelContext);
+                $this->renderProducts($result, $salesChannelDomain, $feed, $salesChannelContext);
                 $criteria->setOffset($criteria->getOffset() + $criteria->getLimit());
             }
         }
@@ -341,26 +343,20 @@ class FeedService
 
     private function loadProducts(Criteria $criteria, SalesChannelContext $salesChannelContext)
     {
-        $entities = $this->listingLoader->load($criteria, $salesChannelContext);
-        $result = ProductListingResult::createFrom($entities);
-        if ($result->getTotal() > 0) {
-            $result->addState(...$entities->getStates());
-            return $result;
-        }
-
-        return null;
+        $products = $this->productRepository->search($criteria, $salesChannelContext->getContext());
+        return $products;
     }
 
     private function generateHeader(FeedEntity $feed): void
     {
         $version = null;
-        if (class_exists(InstalledVersions::class)) {
-            $version = InstalledVersions::getVersion('richardhaeser/sw-tweakwise');
-        }
+
         if ($version === null) {
             $filename = __DIR__ . '/../../composer.json';
             $composerData = json_decode(file_get_contents($filename), true);
             $version = $composerData['version'] ?: '-';
+        } elseif (class_exists(InstalledVersions::class)) {
+            $version = InstalledVersions::getVersion('richardhaeser/sw-tweakwise');
         }
         $variables = [
             'pluginVersion' => $version,
@@ -467,128 +463,65 @@ class FeedService
      */
     private function renderProducts($products, SalesChannelDomainEntity $domain, FeedEntity $feed, SalesChannelContext $salesChannelContext): void
     {
+        $parentProducts = [];
         $content = '';
         /** @var ProductEntity $product */
         foreach ($products as $product) {
-            echo '.';
-            $productId = $product->getProductNumber() . ' (' . $domain->getLanguage()->getTranslationCode()->getCode() . ' - ' . crc32($domain->getId()) . ')';
-            if (!in_array($productId, $this->uniqueProductIds, true)) {
-                $otherVariants = null;
-                if ($product->getParentId()) {
-                    $criteria = new Criteria([$product->getParentId()]);
-                    $criteria->addAssociation('children');
-
-                    if (!$feed->isExcludeOptions()) {
-                        $criteria->addAssociation('children.options');
-                        $criteria->addAssociation('children.options.group');
-                    }
-                    if (!$feed->isExcludeProperties()) {
-                        $criteria->addAssociation('children.properties');
-                        $criteria->addAssociation('children.properties.group');
-                    }
-
-                    /** @var ProductEntity $parent */
-                    $parent = $this->productRepository->search($criteria, $salesChannelContext->getContext())->first();
-                    if ($parent->getChildCount() > 0) {
-                        $configurationGroupConfigArray = [];
-                        if (version_compare($this->shopwareVersion, '6.4.15', '>=')) {
-                            /** @phpstan-ignore-next-line */
-                            $listingConfig = $parent->getVariantListingConfig();
-                            if ($listingConfig) {
-                                $configurationGroupConfigArray = $listingConfig->getConfiguratorGroupConfig() ?: [];
-                            }
-                        } else {
-                            /** @phpstan-ignore-next-line */
-                            $configurationGroupConfigArray = $parent->getConfiguratorGroupConfig() ?: [];
-                        }
-
-                        $getVariants = true;
-                        //                        if (!$parent->getMainVariantId()) {
-                        foreach ($configurationGroupConfigArray as $configurationGroupConfig) {
-                            if (
-                                is_array($configurationGroupConfig)
-                                && array_key_exists('expressionForListings', $configurationGroupConfig)
-                                && $configurationGroupConfig['expressionForListings'] === true
-                            ) {
-                                $getVariants = false;
-                                break;
-                            }
-                        }
-                        //                        }
-                        if ($getVariants === true) {
-                            $otherVariants = $parent->getChildren();
-                        }
-
-                    }
-                }
-                $otherVariantsXml = '';
-
-                if ($product->getChildCount() > 0 && !$feed->isExcludeChildren() && (!$feed->isExcludeOptions() || !$feed->isExcludeProperties())) {
-                    $criteria = new Criteria();
-                    $criteria->addFilter(new EqualsFilter('parentId', $product->getId()));
-
-                    if (!$feed->isExcludeOptions()) {
-                        $criteria->addAssociation('options');
-                        $criteria->addAssociation('options.group');
-                    }
-                    if (!$feed->isExcludeProperties()) {
-                        $criteria->addAssociation('properties');
-                        $criteria->addAssociation('properties.group');
-                    }
-
-                    $criteria->setLimit(1);
-                    $criteria->setOffset(0);
-                    while ($childProducts = $this->productRepository->search($criteria, $salesChannelContext->getContext())->getElements()) {
-                        /** @var ProductEntity $childProduct */
-                        foreach ($childProducts as $childProduct) {
-                            foreach ($childProduct->getOptions() as $option) {
-                                $otherVariantsXml .= $this->twig->render($this->resolveView('variantAttributes.xml.twig', $feed), [
-                                    'name' => $option->getGroup()->getTranslated()['name'],
-                                    'value' => $option->getTranslated()['name'],
-                                ]);
-                            }
-                            foreach ($childProduct->getProperties() as $property) {
-                                $otherVariantsXml .= $this->twig->render($this->resolveView('variantAttributes.xml.twig', $feed), [
-                                    'name' => $property->getGroup()->getTranslated()['name'],
-                                    'value' => $property->getTranslated()['name'],
-                                ]);
-                            }
-                        }
-                        $criteria->setOffset($criteria->getOffset() + 1);
-                        echo '.';
-                    }
-                }
-
-                $categories = [];
-                foreach ($product->getCategories() as $pCategory) {
-                    if ($pCategory->getProductAssignmentType() === 'product') {
-                        if (!array_key_exists($pCategory->getId(), $categories)) {
-                            $categories[$pCategory->getId()] = $pCategory;
-                        }
-                    }
-                }
-                foreach ($product->getStreams() as $pStream) {
-                    foreach ($pStream->getCategories() as $sCategory) {
-                        if (!array_key_exists($sCategory->getId(), $categories)) {
-                            $categories[$sCategory->getId()] = $sCategory;
-                        }
-                    }
-                }
-
-                $content .= $this->twig->render($this->resolveView('product.xml.twig', $feed), [
-                    'categoryIdsInFeed' => array_unique($this->uniqueCategoryIds),
-                    'categories' => $categories,
-                    'domainId' => $domain->getId(),
-                    'domainUrl' => rtrim($domain->getUrl(), '/') . '/',
-                    'product' => $product,
-                    'prices' => $this->getLowestAndHighestPrice($product, $salesChannelContext),
-                    'otherVariantsXml' => $otherVariantsXml,
-                    'lang' => $domain->getLanguage()->getTranslationCode()->getCode(),
-                    'salesChannel' => $domain->getSalesChannel(),
-                    'feed' => $feed
-                ]);
-                $this->uniqueProductIds[] = $productId;
+            
+            if($product->childCount && $product->childCount > 0)
+                continue;
+            $twProductNumber = crc32($domain->getLanguage()->getId()) . crc32($domain->getId()) . $product->getProductNumber();
+            $twParentProductNumber = null;
+            $parentProductId = $product->getParentId();
+            if($parentProductId && array_key_exists($parentProductId, $parentProducts))
+            {
+                $twParentProductNumber = $parentProducts[$parentProductId];
             }
+            elseif($parentProductId)
+            {
+                $parentCriteria = new Criteria();
+                $parentCriteria->setIds([$parentProductId]);
+    
+                /** @var ProductEntity|null $parentProduct */
+                $parentProduct = $this->productRepository->search($parentCriteria, Context::createDefaultContext())->first();
+    
+                if ($parentProduct) {
+                    $twParentProductNumber =  crc32($domain->getLanguage()->getId()) . crc32($domain->getId()) . $parentProduct->getProductNumber();
+                    $parentProducts[$parentProductId] = $twParentProductNumber;
+                }
+            }
+
+
+            $categories = [];
+            foreach ($product->getCategories() as $pCategory) {
+x                if ($pCategory->getProductAssignmentType() === 'product') {
+                    if (!array_key_exists($pCategory->getId(), $categories)) {
+                        $categories[$pCategory->getId()] = $pCategory;
+                    }
+                }
+            }
+            foreach ($product->getStreams() as $pStream) {
+                foreach ($pStream->getCategories() as $sCategory) {
+                    if (!array_key_exists($sCategory->getId(), $categories)) {
+                        $categories[$sCategory->getId()] = $sCategory;
+                    }
+                }
+            }
+
+            $content .= $this->twig->render($this->resolveView('product.xml.twig', $feed), [
+                'categoryIdsInFeed' => array_unique($this->uniqueCategoryIds),
+                'categories' => $categories,
+                'domainId' => $domain->getId(),
+                'domainUrl' => rtrim($domain->getUrl(), '/') . '/',
+                'product' => $product,
+                'groupCode' => $twParentProductNumber,
+                'prices' => $this->getLowestAndHighestPrice($product, $salesChannelContext),
+                'otherVariantsXml' =>"",
+                'lang' => $domain->getLanguage()->getTranslationCode()->getCode(),
+                'salesChannel' => $domain->getSalesChannel(),
+                'feed' => $feed
+            ]);
+            
         }
 
         $this->writeContent($content, $feed);
