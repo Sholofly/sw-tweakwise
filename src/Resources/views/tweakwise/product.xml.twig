@@ -6,7 +6,7 @@
 {% block feed_item %}
 <item>
     {% block feed_item_inner %}
-        <id>{% block feed_item_id %}{{ product.productNumber }} ({{ lang }} - {{ crc32(domainId) }}){% endblock %}</id>
+        <id>{% block feed_item_id %}{{ productNumber }}{% endblock %}</id>
         <groupcode>{{groupCode}}</groupcode>
         <price>{{ price.unitPrice|round(2, 'common') }}</price>
         <name>{% block feed_item_name %}<![CDATA[{{ product.translated.name|raw }}]]>{% endblock %}</name>

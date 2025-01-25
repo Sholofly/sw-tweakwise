@@ -470,7 +470,7 @@ class FeedService
             
             if($product->childCount && $product->childCount > 0)
                 continue;
-            $twProductNumber = crc32($domain->getLanguage()->getId()) . crc32($domain->getId()) . $product->getProductNumber();
+            $twProductNumber = crc32($domain->getLanguage()->getId()) .'-'. crc32($domain->getId()) .'-'. $product->getProductNumber();
             $twParentProductNumber = null;
             $parentProductId = $product->getParentId();
             if($parentProductId && array_key_exists($parentProductId, $parentProducts))
@@ -486,15 +486,20 @@ class FeedService
                 $parentProduct = $this->productRepository->search($parentCriteria, Context::createDefaultContext())->first();
     
                 if ($parentProduct) {
-                    $twParentProductNumber =  crc32($domain->getLanguage()->getId()) . crc32($domain->getId()) . $parentProduct->getProductNumber();
+                    $twParentProductNumber =  crc32($domain->getLanguage()->getId()) .'-'. crc32($domain->getId()) .'-'. $parentProduct->getProductNumber();
                     $parentProducts[$parentProductId] = $twParentProductNumber;
                 }
+            }
+
+            if($twParentProductNumber == null)
+            {
+                $twParentProductNumber = $twProductNumber;
             }
 
 
             $categories = [];
             foreach ($product->getCategories() as $pCategory) {
-x                if ($pCategory->getProductAssignmentType() === 'product') {
+                if ($pCategory->getProductAssignmentType() === 'product') {
                     if (!array_key_exists($pCategory->getId(), $categories)) {
                         $categories[$pCategory->getId()] = $pCategory;
                     }
@@ -514,6 +519,7 @@ x                if ($pCategory->getProductAssignmentType() === 'product') {
                 'domainId' => $domain->getId(),
                 'domainUrl' => rtrim($domain->getUrl(), '/') . '/',
                 'product' => $product,
+                'productNumber' => $twProductNumber,
                 'groupCode' => $twParentProductNumber,
                 'prices' => $this->getLowestAndHighestPrice($product, $salesChannelContext),
                 'otherVariantsXml' =>"",
